@@ -1,12 +1,14 @@
 package products
 
 import (
+	"ecom/internal/response"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -23,29 +25,25 @@ func NewHandler(service IService) *ProductsHandler {
 	}
 }
 
-func (ph *ProductsHandler) GetProducts(c *gin.Context) {
-	products, err := ph.service.GetProducts(c.Request.Context())
+func (ph *ProductsHandler) GetProducts(w http.ResponseWriter, r *http.Request) {
+	products, err := ph.service.GetProducts(r.Context())
 	if err != nil {
 		slog.Error("Error getting products", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "internal server error",
-		})
+		response.InternalServerError(w)
 		return
 	}
-	c.JSON(http.StatusOK, products)
+	response.OK(w, products)
 }
 
-func (ph *ProductsHandler) CreateProduct(c *gin.Context) {
+func (ph *ProductsHandler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 	type CreateProductRequest struct {
 		Name  string  `json:"name" validate:"required,min=2,max=120"`
 		Price float64 `json:"price" validate:"required,gt=0,lte=1000000"`
 	}
 
 	var req CreateProductRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid request payload",
-		})
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "invalid request payload")
 		return
 	}
 
@@ -58,90 +56,71 @@ func (ph *ProductsHandler) CreateProduct(c *gin.Context) {
 			for _, fieldErr := range validationErrs {
 				fieldErrors[fieldErr.Field()] = formatValidationError(fieldErr)
 			}
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":  "validation failed",
-				"fields": fieldErrors,
-			})
+			response.ValidationError(w, "validation failed", fieldErrors)
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "validation error",
-		})
+		response.BadRequest(w, "validation error")
 		return
 	}
 
-	product, err := ph.service.CreateProduct(c.Request.Context(), req.Name, req.Price)
+	product, err := ph.service.CreateProduct(r.Context(), req.Name, req.Price)
 	if err != nil {
 		// Check if it's a validation error from service layer
 		var validationErr *ValidationError
 		if errors.As(err, &validationErr) {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": validationErr.Error(),
-			})
+			response.BadRequest(w, validationErr.Error())
 			return
 		}
 
 		// Internal/database errors
 		slog.Error("Error creating product", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "internal server error",
-		})
+		response.InternalServerError(w)
 		return
 	}
 
-	c.JSON(http.StatusCreated, product)
+	response.Created(w, product)
 }
 
-func (ph *ProductsHandler) GetProductByID(c *gin.Context) {
-	idStr := c.Param("id")
+func (ph *ProductsHandler) GetProductByID(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
 	id, err := strconv.ParseInt(idStr, 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid product ID",
-		})
+		response.BadRequest(w, "invalid product ID")
 		return
 	}
 
-	product, err := ph.service.GetProductByID(c.Request.Context(), int32(id))
+	product, err := ph.service.GetProductByID(r.Context(), int32(id))
 	if err != nil {
 		// Check for "not found" error (pgx returns specific error)
 		if err.Error() == "no rows in result set" {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "product not found",
-			})
+			response.NotFound(w, "product not found")
 			return
 		}
 
 		slog.Error("Error getting product by ID", "error", err, "id", id)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "internal server error",
-		})
+		response.InternalServerError(w)
 		return
 	}
 
-	c.JSON(http.StatusOK, product)
+	response.OK(w, product)
 }
 
-func (ph *ProductsHandler) DeleteProduct(c *gin.Context) {
-	idStr := c.Param("id")
+func (ph *ProductsHandler) DeleteProduct(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
 	id, err := strconv.ParseInt(idStr, 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid product ID",
-		})
+		response.BadRequest(w, "invalid product ID")
 		return
 	}
 
-	err = ph.service.DeleteProduct(c.Request.Context(), int32(id))
+	err = ph.service.DeleteProduct(r.Context(), int32(id))
 	if err != nil {
 		slog.Error("Error deleting product", "error", err, "id", id)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "internal server error",
-		})
+		response.InternalServerError(w)
 		return
 	}
 
-	c.JSON(http.StatusNoContent, nil)
+	response.NoContent(w)
 }
 
 // formatValidationError formats validator errors into human-readable messages
